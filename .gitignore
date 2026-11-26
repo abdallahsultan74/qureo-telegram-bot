@@ -1,0 +1,6 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+test_login.py
+test_cookie_transfer.py
