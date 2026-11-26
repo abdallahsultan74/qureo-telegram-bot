@@ -71,8 +71,8 @@ LAST_CHAPTER = 90042
 IMPERSONATE = "chrome124"
 BROWSER_HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "ar,en-US;q=0.9,en;q=0.8",
@@ -156,23 +156,44 @@ class QureoSolver:
         self.on_progress(msg)
 
     def login(self) -> dict[str, Any]:
-        self._emit("جاري تسجيل الدخول…")
+        mode = "curl_cffi" if _USE_CURL_CFFI else "requests"
+        self._emit(f"جاري تسجيل الدخول… ({mode})")
+        # زيارة الصفحة أولاً لجلب كوكيز الجلسة
+        try:
+            self.session.get(f"{PORTAL}/", timeout=60)
+        except Exception:
+            pass
+
         r = self.session.post(
             f"{PORTAL}/oauth2/password-login",
             json={"student_id": self.student_id, "password": self.password},
+            headers={
+                "Content-Type": "application/json",
+                "Origin": PORTAL,
+                "Referer": f"{PORTAL}/",
+            },
             allow_redirects=False,
             timeout=60,
         )
         if r.status_code not in (200, 302, 303):
             try:
-                err = r.json().get("error") or r.text[:200]
+                data = r.json()
+                err = data.get("error") or data.get("error_description") or r.text[:200]
             except Exception:
-                err = r.text[:200]
+                err = (r.text or "")[:200] or f"empty body status={r.status_code}"
+            if "password_mismatch" in str(err) or "invalid" in str(err).lower():
+                raise RuntimeError("رقم الحساب أو كلمة المرور غلط")
+            if r.status_code in (403, 429) or "cloudflare" in str(err).lower():
+                raise RuntimeError(
+                    f"المنصة رفضت الطلب (status {r.status_code}). جرّب تاني بعد دقيقة."
+                )
             raise RuntimeError(f"فشل الدخول (status {r.status_code}): {err}")
 
         info = self.session.get(f"{PORTAL}/oauth2/userinfo", timeout=60)
         if info.status_code != 200:
-            raise RuntimeError("فشل جلب بيانات المستخدم بعد الدخول")
+            raise RuntimeError(
+                f"فشل جلب بيانات المستخدم بعد الدخول (status {info.status_code})"
+            )
 
         self.session.get(f"{TP}/course/javascript_ar", timeout=60)
         me = self.session.get(f"{TP}/api/study/students/me", timeout=60)
@@ -192,7 +213,10 @@ class QureoSolver:
             raise RuntimeError(f"الجلسة لم تصل لمنصة التعلم (status {me.status_code})")
         ctype = (me.headers.get("content-type") or "").lower()
         if "json" not in ctype:
-            raise RuntimeError("استجابة غير متوقعة من منصة التعلم")
+            raise RuntimeError(
+                "استجابة غير متوقعة من منصة التعلم "
+                f"(content-type={ctype or 'unknown'})"
+            )
 
         self._emit("تم تسجيل الدخول ✅")
         return me.json()
